@@ -29,6 +29,7 @@ from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 import autocomplete_db
+import app_settings
 
 
 # ---------------------------------------------------------------------------
@@ -486,8 +487,6 @@ class TechNoteWindow(tk.Toplevel):
         self.minsize(520, 400)
 
         self.widgets = {}  # key -> widget
-        self.user_narratives_menu = None  # created lazily, once a narrative exists
-        self._build_menu_bar()
 
         container = ttk.Frame(self, padding=10)
         container.pack(fill="both", expand=True)
@@ -565,16 +564,9 @@ class TechNoteWindow(tk.Toplevel):
         self._update_patient_id()
 
         # Tech comment - big paragraph box
-        comment_header = ttk.Frame(form)
-        comment_header.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(14, 4))
-        comment_header.columnconfigure(0, weight=1)
-
-        ttk.Label(
-            comment_header, text="Tech Comment", font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            comment_header, text="Clear", width=8, command=self._clear_tech_comment
-        ).grid(row=0, column=1, sticky="e")
+        ttk.Label(form, text="Tech Comment", font=("Segoe UI", 10, "bold")).grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(14, 4)
+        )
         row += 1
 
         comment_box = tk.Text(form, height=10, wrap="word", undo=True)
@@ -601,88 +593,6 @@ class TechNoteWindow(tk.Toplevel):
         ttk.Button(
             btn_frame, text="Save Tech Note", command=self._save
         ).pack(side="right")
-
-    # -- tech narratives -----------------------------------------------
-    def _build_menu_bar(self):
-        menu_bar = tk.Menu(self, tearoff=0)
-        self.config(menu=menu_bar)
-        self.menu_bar = menu_bar
-        menu_bar.add_command(label="Add Tech Narrative", command=self._add_tech_narrative)
-        self._refresh_user_narratives_menu()
-
-    def _refresh_user_narratives_menu(self):
-        """(Re)build the 'User Narratives' dropdown from the database.
-        The dropdown only appears in the menu bar once at least one
-        narrative has been saved."""
-        narratives = autocomplete_db.get_narratives()
-        if not narratives:
-            return
-
-        if self.user_narratives_menu is None:
-            self.user_narratives_menu = tk.Menu(self.menu_bar, tearoff=0)
-            self.menu_bar.add_cascade(label="User Narratives", menu=self.user_narratives_menu)
-        else:
-            self.user_narratives_menu.delete(0, tk.END)
-
-        for name, text in narratives:
-            self.user_narratives_menu.add_command(
-                label=name, command=lambda t=text: self._insert_narrative(t)
-            )
-
-    def _insert_narrative(self, text):
-        comment_box = self.widgets.get("tech_comment")
-        if comment_box is None:
-            return
-        comment_box.insert(tk.INSERT, text)
-        comment_box.focus_set()
-
-    def _clear_tech_comment(self):
-        comment_box = self.widgets.get("tech_comment")
-        if comment_box is None:
-            return
-        comment_box.delete("1.0", tk.END)
-        comment_box.focus_set()
-
-    def _add_tech_narrative(self):
-        dialog = tk.Toplevel(self)
-        dialog.title("Add Tech Narrative")
-        dialog.geometry("440x380")
-        dialog.transient(self)
-        dialog.grab_set()
-
-        frame = ttk.Frame(dialog, padding=10)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Narrative Name").pack(anchor="w")
-        name_entry = ttk.Entry(frame)
-        name_entry.pack(fill="x", pady=(0, 10))
-
-        ttk.Label(frame, text="Narrative Text").pack(anchor="w")
-        text_box = tk.Text(frame, height=12, wrap="word", undo=True)
-        text_box.pack(fill="both", expand=True, pady=(0, 10))
-
-        def on_save():
-            name = name_entry.get().strip()
-            text = text_box.get("1.0", tk.END).strip()
-            if not name or not text:
-                messagebox.showerror(
-                    "Missing Information",
-                    "Please enter both a name and the narrative text.",
-                    parent=dialog,
-                )
-                return
-            autocomplete_db.save_narrative(name, text)
-            self._refresh_user_narratives_menu()
-            dialog.destroy()
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill="x")
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(
-            side="right", padx=(6, 0)
-        )
-        ttk.Button(btn_frame, text="Save Narrative", command=on_save).pack(side="right")
-
-        name_entry.focus_set()
 
     # -- helpers ------------------------------------------------------
     def _update_patient_id(self, event=None):
@@ -835,6 +745,8 @@ def build_docx(values, path):
     style.font.name = "Calibri"
     style.font.size = Pt(11)
 
+    _add_logo_if_configured(doc)
+
     title = doc.add_heading("Sleep Study Tech Note", level=1)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -885,6 +797,32 @@ def build_docx(values, path):
     return path
 
 
+LOGO_WIDTH_INCHES = 1.5  # adjust to taste; change in Settings dialog later if desired
+
+
+def _add_logo_if_configured(doc):
+    """Insert the user-configured logo (if any) as a left-aligned image
+    at the top of the document BODY -- deliberately not using
+    python-docx's real "header" feature (doc.sections[0].header).
+    Real headers require python-docx's own bundled default-header.xml
+    template at runtime, which is what caused unreliable behavior when
+    this app was packaged with PyInstaller's --onefile mode. A plain
+    body image has no such dependency and is visually identical for a
+    short, single-purpose document like this one."""
+    logo_path = app_settings.get_logo_path()
+    if not logo_path or not os.path.isfile(logo_path):
+        return
+    try:
+        logo_paragraph = doc.add_paragraph()
+        logo_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = logo_paragraph.add_run()
+        run.add_picture(logo_path, width=Inches(LOGO_WIDTH_INCHES))
+    except Exception:
+        # A missing/corrupt/unsupported image file shouldn't block
+        # saving the note -- just skip it.
+        pass
+
+
 def _add_section_heading(doc, text):
     h = doc.add_heading(text, level=2)
     for run in h.runs:
@@ -922,7 +860,7 @@ class HomeWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Sleep Lab Tech Notes")
-        self.geometry("420x300")
+        self.geometry("420x380")
         self.resizable(False, False)
 
         if not HAS_TKCALENDAR:
@@ -960,7 +898,72 @@ class HomeWindow(tk.Tk):
         )
         big_button.pack(fill="x")
 
+        # --- Logo settings ---------------------------------------------
+        logo_frame = ttk.Frame(frame)
+        logo_frame.pack(fill="x", pady=(30, 0))
+
+        ttk.Label(
+            logo_frame, text="Document Logo", font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+
+        self.logo_status_label = ttk.Label(
+            logo_frame, text="", foreground="gray", wraplength=340
+        )
+        self.logo_status_label.pack(anchor="w", pady=(2, 8))
+
+        logo_buttons = ttk.Frame(logo_frame)
+        logo_buttons.pack(fill="x")
+        ttk.Button(
+            logo_buttons, text="Choose Logo...", command=self._choose_logo
+        ).pack(side="left")
+        ttk.Button(
+            logo_buttons, text="Remove Logo", command=self._remove_logo
+        ).pack(side="left", padx=(8, 0))
+
+        self._refresh_logo_status()
+
         ttk.Button(frame, text="Quit", command=self.destroy).pack(pady=(20, 0))
+
+    def _refresh_logo_status(self):
+        logo_path = app_settings.get_logo_path()
+        if logo_path and os.path.isfile(logo_path):
+            self.logo_status_label.configure(
+                text=f"Current: {os.path.basename(logo_path)}"
+            )
+        elif logo_path:
+            self.logo_status_label.configure(
+                text="Current logo file is missing -- please choose again."
+            )
+        else:
+            self.logo_status_label.configure(
+                text="No logo set. Notes will save without one."
+            )
+
+    def _choose_logo(self):
+        path = filedialog.askopenfilename(
+            title="Choose a logo image",
+            filetypes=[
+                ("Image files", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        app_settings.set_logo_path(path)
+        self._refresh_logo_status()
+        messagebox.showinfo(
+            "Logo Set",
+            "This logo will now appear at the top of every saved tech note.",
+        )
+
+    def _remove_logo(self):
+        if app_settings.get_logo_path() is None:
+            return
+        if messagebox.askyesno(
+            "Remove Logo", "Stop including a logo on saved tech notes?"
+        ):
+            app_settings.clear_logo_path()
+            self._refresh_logo_status()
 
     def open_new_tech_note(self):
         try:
