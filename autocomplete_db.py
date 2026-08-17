@@ -38,6 +38,15 @@ def init_db(seed_defaults=None):
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS narratives (
+                name TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
         if not seed_defaults:
             return
@@ -92,3 +101,34 @@ def record_values(field_key, values):
     """Record multiple values for `field_key` (see record_value)."""
     for value in values:
         record_value(field_key, value)
+
+
+def save_narrative(name, text):
+    """Save a named tech narrative for later reuse. Saving under a name
+    that already exists overwrites its text."""
+    name = name.strip()
+    text = text.strip()
+    if not name or not text:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO narratives (name, text, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (name) DO UPDATE SET
+                text = excluded.text,
+                created_at = excluded.created_at
+            """,
+            (name, text, now),
+        )
+
+
+def get_narratives():
+    """Return saved tech narratives as (name, text) tuples, alphabetical
+    by name."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT name, text FROM narratives ORDER BY name ASC"
+        ).fetchall()
+    return [(row[0], row[1]) for row in rows]
